@@ -255,15 +255,16 @@ function freeBusyForSlot(day, period, excludeTeacher){
 async function gasCall(params){
   if(!SCRIPT_URL || SCRIPT_URL.indexOf('PASTE_YOUR') === 0){
     console.warn('SCRIPT_URL is not set yet — see README.md');
-    return null;
+    return { __failed: 'nourl' };
   }
   const url = SCRIPT_URL + '?' + new URLSearchParams(params).toString();
   try{
     const res = await fetch(url);
-    return await res.json();
+    const data = await res.json();
+    return data;
   }catch(e){
     console.warn('gasCall failed', params.action, e);
-    return null;
+    return { __failed: 'network' };
   }
 }
 
@@ -305,11 +306,24 @@ async function saveAssignments(leaveId, rows){
    PIN against the ADMIN_PIN Script Property you set in your own Apps Script
    project (never committed to the public GitHub repo). Not high-security, but
    reasonable for a small internal school tool. */
+/* Simple PIN gate for the admin-only leave history/statistics view — there's no
+   Claude "who's the owner" check outside claude.ai, so the backend compares this
+   PIN against the ADMIN_PIN Script Property you set in your own Apps Script
+   project (never committed to the public GitHub repo). Not high-security, but
+   reasonable for a small internal school tool.
+   Returns a reason code so the UI can tell "wrong PIN" apart from "can't reach
+   the backend at all" — those need very different fixes. */
 async function checkAdminPin(pin){
   const res = await gasCall({ action: 'checkAdmin', pin });
-  const ok = !!(res && res.isAdmin);
-  if(ok){ isAdmin = true; sessionStorage.setItem('isAdmin','1'); }
-  return ok;
+  if(!res || res.__failed){
+    return { ok:false, reason: res && res.__failed==='nourl' ? 'nourl' : 'network' };
+  }
+  if(res.error) return { ok:false, reason:'backend', detail: res.error };
+  if(res.isAdmin){
+    isAdmin = true; sessionStorage.setItem('isAdmin','1');
+    return { ok:true };
+  }
+  return { ok:false, reason:'wrong' };
 }
 function adminLogout(){
   isAdmin = false;
@@ -774,11 +788,17 @@ function attachHandlers(){
       const pin = pinInput.value.trim();
       if(!pin) return;
       adminPinBtn.disabled = true; adminPinBtn.textContent = 'กำลังตรวจสอบ...';
-      const ok = await checkAdminPin(pin);
-      if(ok){ render(); }
+      const result = await checkAdminPin(pin);
+      if(result.ok){ render(); }
       else {
         adminPinBtn.disabled = false; adminPinBtn.textContent = 'เข้าสู่โหมดแอดมิน';
-        errEl.textContent = 'PIN ไม่ถูกต้อง';
+        const messages = {
+          nourl: 'ยังไม่ได้ใส่ลิงก์ Apps Script (SCRIPT_URL) ในไฟล์ index.html',
+          network: 'เชื่อมต่อ Apps Script ไม่ได้ — ตรวจสอบว่า Deploy แบบ "Who has access: Anyone" แล้ว และลิงก์ SCRIPT_URL ถูกต้อง (ลงท้ายด้วย /exec)',
+          backend: 'ระบบหลังบ้านแจ้งข้อผิดพลาด: ' + (result.detail||''),
+          wrong: 'PIN ไม่ถูกต้อง หรือยังไม่ได้ตั้งค่า ADMIN_PIN ใน Script Properties',
+        };
+        errEl.textContent = messages[result.reason] || 'เข้าสู่ระบบไม่สำเร็จ';
       }
     };
     adminPinBtn.addEventListener('click', trySubmit);
