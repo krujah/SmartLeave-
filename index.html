@@ -178,9 +178,24 @@ function priorLeaveDays(teacherName, leaveType, excludeId){
   for(const l of (state.leaves||[])){
     if(l.id===excludeId) continue;
     if(l.teacherName!==teacherName || l.leaveType!==leaveType) continue;
-    total += Math.round((new Date(l.dateTo)-new Date(l.dateFrom))/86400000)+1;
+    total += workingDaysCount(l.dateFrom, l.dateTo);
   }
   return total;
+}
+/* Rows for the "สถิติการลาในปีงบประมาณนี้" table: ลามาแล้ว (other records of that
+   type, excluding this one) + ลาครั้งนี้ (this leave's working days, only on the
+   row matching this leave's own type) = รวมเป็น. */
+function leaveStatsRows(leave, thisTimeDays){
+  const CORE = [
+    {label:'ป่วย', type:'ลาป่วย'},
+    {label:'กิจส่วนตัว', type:'ลากิจส่วนตัว'},
+    {label:'คลอดบุตร', type:'ลาคลอดบุตร'},
+  ];
+  return CORE.map(c=>{
+    const prior = priorLeaveDays(leave.teacherName, c.type, leave.id);
+    const thisTime = (leave.leaveType === c.type) ? (thisTimeDays||0) : 0;
+    return { label: c.label, prior, thisTime, total: prior + thisTime };
+  });
 }
 function escapeHtml(s){
   return (s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -388,8 +403,9 @@ function renderHome(){
       <td>${escapeHtml(l.leaveType)}</td>
       <td class="whitespace-nowrap">${fmtDate(l.dateFrom)} ${l.dateFrom!==l.dateTo? "– "+fmtDate(l.dateTo):""}</td>
       <td class="text-center">${days}</td>
-      <td class="text-center">
+      <td class="text-center whitespace-nowrap">
         <button data-open-leave="${l.id}" class="btn btn-secondary text-xs">เปิด →</button>
+        <button data-print-leave="${l.id}" class="btn btn-primary text-xs">พิมพ์ใบลา</button>
       </td>
     </tr>`;
   }).join("");
@@ -641,9 +657,7 @@ function renderDocument(){
               <th style="border:1px solid #999;padding:4px 2px;line-height:1.35 !important;">รวมเป็น<br>(วันทำการ)</th>
             </tr></thead>
             <tbody>
-              <tr><td style="border:1px solid #999;padding:3px 2px;">ป่วย</td><td style="border:1px solid #999;height:22px;"></td><td style="border:1px solid #999;"></td><td style="border:1px solid #999;"></td></tr>
-              <tr><td style="border:1px solid #999;padding:3px 2px;">กิจส่วนตัว</td><td style="border:1px solid #999;height:22px;"></td><td style="border:1px solid #999;"></td><td style="border:1px solid #999;"></td></tr>
-              <tr><td style="border:1px solid #999;padding:3px 2px;">คลอดบุตร</td><td style="border:1px solid #999;height:22px;"></td><td style="border:1px solid #999;"></td><td style="border:1px solid #999;"></td></tr>
+              ${leaveStatsRows(leave, workDays).map(r=>`<tr><td style="border:1px solid #999;padding:3px 2px;">${r.label}</td><td style="border:1px solid #999;height:22px;text-align:center;">${r.prior||''}</td><td style="border:1px solid #999;text-align:center;">${r.thisTime||''}</td><td style="border:1px solid #999;text-align:center;">${r.total||''}</td></tr>`).join('')}
             </tbody>
           </table>
 
@@ -818,6 +832,26 @@ function attachHandlers(){
       state.currentAssignments = rows;
       state.loadingDb = false;
       state.view = "assign";
+      render();
+    });
+  });
+
+  /* Admin: jump straight to the printable document using the teacher's own
+     previously-submitted data (and previously-saved substitute assignments,
+     if any), without going through the assignment-editing screen. */
+  root.querySelectorAll('[data-print-leave]').forEach(el=>{
+    el.addEventListener('click', async ()=>{
+      const id = el.getAttribute('data-print-leave');
+      const leave = state.leaves.find(l=>l.id===id);
+      if(!leave) return;
+      state.currentLeaveId = id;
+      state.currentLeave = leave;
+      state.loadingDb = true; render();
+      let rows = await loadAssignments(id);
+      if(!rows) rows = buildScheduleRows(leave.teacherName, leave.dateFrom, leave.dateTo);
+      state.currentAssignments = rows;
+      state.loadingDb = false;
+      state.view = "document";
       render();
     });
   });
