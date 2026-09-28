@@ -657,7 +657,7 @@ function renderDocument(){
               <th style="border:1px solid #999;padding:4px 2px;line-height:1.35 !important;">รวมเป็น<br>(วันทำการ)</th>
             </tr></thead>
             <tbody>
-              ${leaveStatsRows(leave, workDays).map(r=>`<tr><td style="border:1px solid #999;padding:3px 2px;">${r.label}</td><td style="border:1px solid #999;height:22px;text-align:center;">${r.prior||''}</td><td style="border:1px solid #999;text-align:center;">${r.thisTime||''}</td><td style="border:1px solid #999;text-align:center;">${r.total||''}</td></tr>`).join('')}
+              ${leaveStatsRows(leave, workDays).map(r=>`<tr><td style="border:1px solid #999;padding:3px 2px;">${r.label}</td><td style="border:1px solid #999;height:22px;"></td><td style="border:1px solid #999;"></td><td style="border:1px solid #999;"></td></tr>`).join('')}
             </tbody>
           </table>
 
