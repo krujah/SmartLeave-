@@ -809,6 +809,11 @@ function attachHandlers(){
       const v = el.getAttribute('data-nav');
       state.view = v;
       render();
+      // Many teachers share this one Google Sheet from their own browsers — the
+      // list loaded when the tab first opened can already be stale by the time
+      // someone comes back to the home page, so refresh it from the sheet
+      // every time (quietly — the page already has last-known data to show).
+      if(v === 'home') loadLeaves().then(render);
     });
   });
 
@@ -824,7 +829,7 @@ function attachHandlers(){
       if(!pin) return;
       adminPinBtn.disabled = true; adminPinBtn.textContent = 'กำลังตรวจสอบ...';
       const result = await checkAdminPin(pin);
-      if(result.ok){ render(); }
+      if(result.ok){ render(); loadLeaves().then(render); }
       else {
         adminPinBtn.disabled = false; adminPinBtn.textContent = 'เข้าสู่โหมดแอดมิน';
         const messages = {
