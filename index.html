@@ -128,6 +128,7 @@ const state = {
   currentLeave: null,
   currentAssignments: null,   // array of rows for currentLeaveId
   loadingDb: true,
+  assignSaveStatus: null,      // null | 'saving' | 'saved' | 'failed' — see renderDocument
 };
 
 function uid(){ return 'lv_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
@@ -267,25 +268,42 @@ function freeBusyForSlot(day, period, excludeTeacher){
 // GET-only API (even for writes) so calling it from a different origin, like
 // GitHub Pages, never triggers a CORS preflight — Apps Script web apps don't
 // handle preflight OPTIONS requests, so POST+JSON would otherwise just fail silently.
-async function gasCall(params){
+// Apps Script web apps can take several seconds to "wake up" after being idle
+// (a cold start), and school wifi can drop a request outright. A plain fetch()
+// with no timeout either hangs on-screen far longer than feels responsive, or
+// fails on a blip that would have gone through a second later. So: give each
+// attempt a generous timeout (cold start, not a stuck connection) and retry
+// once automatically before telling the user anything failed.
+async function gasCall(params, opts){
   if(!SCRIPT_URL || SCRIPT_URL.indexOf('PASTE_YOUR') === 0){
     console.warn('SCRIPT_URL is not set yet — see README.md');
     return { __failed: 'nourl' };
   }
   const url = SCRIPT_URL + '?' + new URLSearchParams(params).toString();
-  try{
-    const res = await fetch(url);
-    const data = await res.json();
-    return data;
-  }catch(e){
-    console.warn('gasCall failed', params.action, e);
-    return { __failed: 'network' };
+  const attempts = (opts && opts.attempts) || 2;
+  const timeoutMs = (opts && opts.timeoutMs) || 20000;
+  for(let i=0; i<attempts; i++){
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), timeoutMs);
+    try{
+      const res = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(timer);
+      const data = await res.json();
+      return data;
+    }catch(e){
+      clearTimeout(timer);
+      console.warn('gasCall attempt', i+1, 'of', attempts, 'failed:', params.action, e);
+      if(i < attempts-1) await new Promise(r=>setTimeout(r, 700));
+    }
   }
+  return { __failed: 'network' };
 }
 
 async function initDb(){
   // Restore a previously-unlocked admin session on this browser (see checkAdminPin).
-  isAdmin = sessionStorage.getItem('isAdmin') === '1';
+  // localStorage (not sessionStorage) so closing the tab or refreshing doesn't
+  // silently log the admin back out — only "ออกจากโหมดแอดมิน" does that now.
+  isAdmin = localStorage.getItem('isAdmin') === '1';
   await loadLeaves();
   state.loadingDb = false;
   render();
@@ -335,14 +353,14 @@ async function checkAdminPin(pin){
   }
   if(res.error) return { ok:false, reason:'backend', detail: res.error };
   if(res.isAdmin){
-    isAdmin = true; sessionStorage.setItem('isAdmin','1');
+    isAdmin = true; localStorage.setItem('isAdmin','1');
     return { ok:true };
   }
   return { ok:false, reason:'wrong' };
 }
 function adminLogout(){
   isAdmin = false;
-  sessionStorage.removeItem('isAdmin');
+  localStorage.removeItem('isAdmin');
   render();
 }
 
@@ -764,9 +782,12 @@ function renderDocument(){
   return `
   <div class="fade-in">
     <div class="card p-4 mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div class="flex gap-2">
+      <div class="flex gap-2 items-center flex-wrap">
         <button data-nav="home" class="btn btn-ghost">← หน้าหลัก</button>
         <button data-nav="assign" class="btn btn-secondary">← แก้ไขการจัดสอนแทน</button>
+        ${state.assignSaveStatus==='saving' ? `<span class="text-xs" style="color:var(--muted)">⏳ กำลังบันทึกข้อมูลครูสอนแทน...</span>` : ''}
+        ${state.assignSaveStatus==='saved' ? `<span class="text-xs" style="color:#2e7d32">✓ บันทึกข้อมูลครูสอนแทนแล้ว</span>` : ''}
+        ${state.assignSaveStatus==='failed' ? `<span class="text-xs flex items-center gap-1" style="color:#c0392b">⚠️ บันทึกข้อมูลครูสอนแทนไม่สำเร็จ <button id="retrySaveAssignBtn" class="btn btn-secondary text-xs">ลองใหม่</button></span>` : ''}
       </div>
       <div class="flex gap-2">
         <button id="printBtn" class="btn btn-secondary">🖨️ พิมพ์</button>
@@ -831,6 +852,7 @@ function attachHandlers(){
       if(!rows) rows = buildScheduleRows(leave.teacherName, leave.dateFrom, leave.dateTo);
       state.currentAssignments = rows;
       state.loadingDb = false;
+      state.assignSaveStatus = null;
       state.view = "assign";
       render();
     });
@@ -851,6 +873,7 @@ function attachHandlers(){
       if(!rows) rows = buildScheduleRows(leave.teacherName, leave.dateFrom, leave.dateTo);
       state.currentAssignments = rows;
       state.loadingDb = false;
+      state.assignSaveStatus = null;
       state.view = "document";
       render();
     });
@@ -907,10 +930,13 @@ function attachHandlers(){
       const btn = leaveForm.querySelector('button[type=submit]');
       btn.disabled = true; btn.textContent = 'กำลังบันทึก...';
       await saveLeave(leave);
-      await loadLeaves();
+      // We already have the full leave record in hand — no need for a second
+      // round trip to re-fetch the whole list from Apps Script before moving on.
+      state.leaves = [leave, ...(state.leaves||[]).filter(l=>l.id!==leave.id)];
       state.currentLeaveId = leave.id;
       state.currentLeave = leave;
       state.currentAssignments = buildScheduleRows(leave.teacherName, leave.dateFrom, leave.dateTo);
+      state.assignSaveStatus = null;
       state.view = "assign";
       render();
     });
@@ -926,11 +952,33 @@ function attachHandlers(){
 
   const saveAssignBtn = document.getElementById('saveAssignBtn');
   if(saveAssignBtn){
-    saveAssignBtn.addEventListener('click', async ()=>{
-      saveAssignBtn.disabled = true; saveAssignBtn.textContent = 'กำลังบันทึก...';
-      await saveAssignments(state.currentLeaveId, state.currentAssignments);
+    saveAssignBtn.addEventListener('click', ()=>{
+      // Show the document right away — everything it needs is already in memory —
+      // instead of making the teacher stare at "กำลังบันทึก..." while Apps Script
+      // wakes up. The save itself still happens, just in the background; a small
+      // status note on the document page (not part of the printed page) says how
+      // it went, with a retry if it failed.
+      const leaveId = state.currentLeaveId, rows = state.currentAssignments;
+      state.assignSaveStatus = 'saving';
       state.view = "document";
       render();
+      saveAssignments(leaveId, rows).then(ok=>{
+        state.assignSaveStatus = ok ? 'saved' : 'failed';
+        render();
+      });
+    });
+  }
+
+  const retrySaveAssignBtn = document.getElementById('retrySaveAssignBtn');
+  if(retrySaveAssignBtn){
+    retrySaveAssignBtn.addEventListener('click', ()=>{
+      const leaveId = state.currentLeaveId, rows = state.currentAssignments;
+      state.assignSaveStatus = 'saving';
+      render();
+      saveAssignments(leaveId, rows).then(ok=>{
+        state.assignSaveStatus = ok ? 'saved' : 'failed';
+        render();
+      });
     });
   }
 
