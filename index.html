@@ -128,6 +128,7 @@ const state = {
   currentLeave: null,
   currentAssignments: null,   // array of rows for currentLeaveId
   loadingDb: true,
+  leavesLoaded: false,         // has the shared leave list arrived from the sheet at least once?
   assignSaveStatus: null,      // null | 'saving' | 'saved' | 'failed' — see renderDocument
 };
 
@@ -304,14 +305,23 @@ async function initDb(){
   // localStorage (not sessionStorage) so closing the tab or refreshing doesn't
   // silently log the admin back out — only "ออกจากโหมดแอดมิน" does that now.
   isAdmin = localStorage.getItem('isAdmin') === '1';
-  await loadLeaves();
+  // Show the app immediately instead of a blank page. Filling in a new leave
+  // form needs nothing from the sheet (the teacher list and schedule are built
+  // into this file already) — only the admin's leave-history table needs the
+  // shared list, and that can arrive a moment later without blocking everything
+  // else. This is the single biggest fix for "click the link, nothing shows up
+  // for ages": before, the whole page waited on one Apps Script round trip
+  // (which can itself take several seconds on a cold start) before drawing
+  // anything at all, even the "+ ยื่นใบลา" button.
   state.loadingDb = false;
+  render();
+  await loadLeaves();
   render();
 }
 
 async function loadLeaves(){
   const res = await gasCall({ action: 'listLeaves' });
-  if(res && res.leaves) state.leaves = res.leaves;
+  if(res && res.leaves){ state.leaves = res.leaves; state.leavesLoaded = true; }
   else state.leaves = state.leaves || []; // keep whatever's in memory if the call failed
 }
 
@@ -444,7 +454,9 @@ function renderHome(){
         <h3 class="font-bold">ประวัติการลา (${list.length})</h3>
         <button id="adminLogoutBtn" class="btn btn-ghost text-xs">ออกจากโหมดแอดมิน</button>
       </div>
-      ${list.length===0 ? `<p class="text-sm py-6 text-center" style="color:var(--muted)">ยังไม่มีรายการลา</p>` : `
+      ${list.length===0 ? (state.leavesLoaded
+        ? `<p class="text-sm py-6 text-center" style="color:var(--muted)">ยังไม่มีรายการลา</p>`
+        : `<p class="text-sm py-6 text-center" style="color:var(--muted)">⏳ กำลังโหลดประวัติการลาจากชีท...</p>`) : `
       <div class="scrollx">
         <table>
           <thead><tr><th>ชื่อครู</th><th>ประเภทการลา</th><th>วันที่ลา</th><th>จำนวนวัน</th><th></th></tr></thead>
